@@ -9,7 +9,7 @@ const axios = require('axios');
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const PARES_MONITORADOS = (process.env.COINS || "BTCUSDT,ETHUSDT,BNBUSDT,NOTUSDT,QNTUSDT,FETUSDT").split(",");
-const INTERVALO_ALERTA_3M_MS = 180000; // 3 minutos
+const INTERVALO_ALERTA_3M_MS = 300000; // 3 minutos
 const TEMPO_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutos por ativo
 const WPR_PERIOD = 26;
 const WPR_LOW_THRESHOLD = -99;
@@ -39,7 +39,7 @@ const wprTriggerState = {}; // Memoriza estados do WPR para cada ativo
 
 // Validação de variáveis de ambiente
 function validateEnv() {
-  const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'COINS'];
+  const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'PARES_MONITORADOS'];
   for (const key of required) {
     if (!process.env[key]) {
       logger.error(`Missing environment variable: ${key}`);
