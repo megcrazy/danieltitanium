@@ -8,7 +8,7 @@ const axios = require('axios');
 // ================= CONFIGURAÇÃO ================= //
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const PARES_MONITORADOS = (process.env.COINS || "BTCUSDT,ETHUSDT,BNBUSDT,NOTUSDT,QNTUSDT,FETUSDT").split(",");
+const PARES_MONITORADOS = (process.env.PARES_MONITORADOS || "BTCUSDT,ETHUSDT,BNBUSDT,NOTUSDT,QNTUSDT,FETUSDT").split(",");
 const INTERVALO_ALERTA_3M_MS = 300000; // 3 minutos
 const TEMPO_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutos por ativo
 const WPR_PERIOD = 26;
