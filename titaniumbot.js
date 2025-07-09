@@ -10,7 +10,7 @@ const config = {
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
   PARES_MONITORADOS: (process.env.PARES_MONITORADOS || "BTCUSDT,ETHUSDT,BNBUSDT").split(","),
-  INTERVALO_ALERTA_3M_MS: 180000,
+  INTERVALO_ALERTA_3M_MS: 300000,
   TEMPO_COOLDOWN_MS: 15 * 60 * 1000,
   WPR_PERIOD: 26,
   WPR_LOW_THRESHOLD: -97,
@@ -25,12 +25,12 @@ const config = {
   EMA_89_PERIOD: 89,
   MAX_CACHE_SIZE: 100,
   MAX_HISTORICO_ALERTAS: 10,
-  HEARTBEAT_INTERVAL_MS: 60 * 60 * 1000 // 1 hora
+  HEARTBEAT_INTERVAL_MS: 120 * 60 * 1000
 };
 
-// Logger
+// Logger com nível reduzido para 'error' no console e arquivo
 const logger = winston.createLogger({
-  level: 'info',
+  level: 'error', // Log apenas erros
   format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
   transports: [
     new winston.transports.File({ filename: 'quick_trading_bot.log' }),
@@ -84,11 +84,10 @@ async function withRetry(fn, retries = 5, delayBase = 1000) {
       return await fn();
     } catch (e) {
       if (attempt === retries) {
-        logger.warn(`Falha após ${retries} tentativas: ${e.message}`);
+        logger.error(`Falha após ${retries} tentativas: ${e.message}`);
         throw e;
       }
       const delay = Math.pow(2, attempt - 1) * delayBase;
-      logger.info(`Tentativa ${attempt} falhou, retry após ${delay}ms: ${e.message}`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -97,7 +96,6 @@ async function withRetry(fn, retries = 5, delayBase = 1000) {
 function getCachedData(key) {
   const cacheEntry = state.dataCache.get(key);
   if (cacheEntry && Date.now() - cacheEntry.timestamp < config.CACHE_TTL) {
-    logger.info(`Usando cache para ${key}`);
     return cacheEntry.data;
   }
   state.dataCache.delete(key);
@@ -108,13 +106,11 @@ function setCachedData(key, data) {
   if (state.dataCache.size >= config.MAX_CACHE_SIZE) {
     const oldestKey = state.dataCache.keys().next().value;
     state.dataCache.delete(oldestKey);
-    logger.info(`Cache cheio, removido item mais antigo: ${oldestKey}`);
   }
   state.dataCache.set(key, { timestamp: Date.now(), data });
   setTimeout(() => {
     if (state.dataCache.has(key) && Date.now() - state.dataCache.get(key).timestamp >= config.CACHE_TTL) {
       state.dataCache.delete(key);
-      logger.info(`Cache limpo para ${key}`);
     }
   }, config.CACHE_TTL + 1000);
 }
@@ -138,7 +134,7 @@ function normalizeOHLCV(data) {
     low: Number(c[3]),
     close: Number(c[4]),
     volume: Number(c[5])
-  })).filter(c => !isNaN(c.close) && !isNaN(c.volume));
+  }))..filter(c => !isNaN(c.close) && !isNaN(c.volume));
 }
 
 function calculateWPR(data) {
@@ -244,7 +240,7 @@ function calculateEMA(data, period) {
 
 function detectarQuebraEstrutura(ohlcv) {
   if (!ohlcv || ohlcv.length < 2) return { estruturaAlta: 0, estruturaBaixa: 0, buyLiquidityZones: [], sellLiquidityZones: [] };
-  const lookbackPeriod = 20;
+  constLike lookbackPeriod = 20;
   const previousCandles = ohlcv.slice(0, -1).slice(-lookbackPeriod);
   const highs = previousCandles.map(c => c.high || c[2]).filter(h => !isNaN(h));
   const lows = previousCandles.map(c => c.low || c[3]).filter(l => !isNaN(l));
@@ -330,7 +326,6 @@ async function fetchLSR(symbol) {
       params: { symbol: symbol.replace('/', ''), period: '15m', limit: 2 }
     }));
     if (!res.data || res.data.length < 2) {
-      logger.warn(`Dados insuficientes de LSR para ${symbol}: ${res.data?.length || 0} registros`);
       return getCachedData(cacheKey) || { value: null, isRising: false, percentChange: '0.00' };
     }
     const currentLSR = parseFloat(res.data[0].longShortRatio);
@@ -340,7 +335,7 @@ async function fetchLSR(symbol) {
     setCachedData(cacheKey, result);
     return result;
   } catch (e) {
-    logger.warn(`Erro ao buscar LSR para ${symbol}: ${e.message}`);
+    logger.error(`Erro ao buscar LSR para ${symbol}: ${e.message}`);
     return getCachedData(cacheKey) || { value: null, isRising: false, percentChange: '0.00' };
   }
 }
@@ -352,15 +347,12 @@ async function fetchOpenInterest(symbol, timeframe, retries = 5) {
   try {
     const oiData = await withRetry(() => exchangeFutures.fetchOpenInterestHistory(symbol, timeframe, undefined, 30));
     if (!oiData || oiData.length < 3) {
-      logger.warn(`Dados insuficientes de Open Interest para ${symbol} no timeframe ${timeframe}: ${oiData?.length || 0} registros`);
       if (retries > 0) {
         const delay = Math.pow(2, 5 - retries) * 1000;
-        logger.info(`Tentando novamente para ${symbol} no timeframe ${timeframe}, tentativas restantes: ${retries}, delay: ${delay}ms`);
         await new Promise(resolve => setTimeout(resolve, delay));
         return await fetchOpenInterest(symbol, timeframe, retries - 1);
       }
       if (timeframe === '5m') {
-        logger.info(`Fallback para timeframe 15m para ${symbol}`);
         return await fetchOpenInterest(symbol, '15m', 3);
       }
       return { isRising: false, percentChange: '0.00' };
@@ -376,15 +368,12 @@ async function fetchOpenInterest(symbol, timeframe, retries = 5) {
       }))
       .sort((a, b) => b.timestamp - a.timestamp);
     if (validOiData.length < 3) {
-      logger.warn(`Registros válidos insuficientes para ${symbol} no timeframe ${timeframe}: ${validOiData.length} registros válidos`);
       if (retries > 0) {
         const delay = Math.pow(2, 5 - retries) * 1000;
-        logger.info(`Tentando novamente para ${symbol} no timeframe ${timeframe}, tentativas restantes: ${retries}, delay: ${delay}ms`);
         await new Promise(resolve => setTimeout(resolve, delay));
         return await fetchOpenInterest(symbol, timeframe, retries - 1);
       }
       if (timeframe === '5m') {
-        logger.info(`Fallback para timeframe 15m para ${symbol}`);
         return await fetchOpenInterest(symbol, '15m', 3);
       }
       return { isRising: false, percentChange: '0.00' };
@@ -394,15 +383,12 @@ async function fetchOpenInterest(symbol, timeframe, retries = 5) {
     const median = sortedOi[Math.floor(sortedOi.length / 2)];
     const filteredOiData = validOiData.filter(d => d.openInterest >= median * 0.5 && d.openInterest <= median * 1.5);
     if (filteredOiData.length < 3) {
-      logger.warn(`Registros válidos após filtro de outliers insuficientes para ${symbol} no timeframe ${timeframe}: ${filteredOiData.length}`);
       if (retries > 0) {
         const delay = Math.pow(2, 5 - retries) * 1000;
-        logger.info(`Tentando novamente para ${symbol} no timeframe ${timeframe}, tentativas restantes: ${retries}, delay: ${delay}ms`);
         await new Promise(resolve => setTimeout(resolve, delay));
         return await fetchOpenInterest(symbol, timeframe, retries - 1);
       }
       if (timeframe === '5m') {
-        logger.info(`Fallback para timeframe 15m para ${symbol}`);
         return await fetchOpenInterest(symbol, '15m', 3);
       }
       return { isRising: false, percentChange: '0.00' };
@@ -417,14 +403,13 @@ async function fetchOpenInterest(symbol, timeframe, retries = 5) {
       percentChange: oiPercentChange
     };
     setCachedData(cacheKey, result);
-    logger.info(`Open Interest calculado para ${symbol} no timeframe ${timeframe}: sma=${sma}, previousSma=${previousSma}, percentChange=${oiPercentChange}%`);
     return result;
   } catch (e) {
     if (e.message.includes('binance does not have market symbol') || e.message.includes('Invalid symbol')) {
       logger.error(`Símbolo ${symbol} não suportado para Open Interest no timeframe ${timeframe}. Ignorando.`);
       return { isRising: false, percentChange: '0.00' };
     }
-    logger.warn(`Erro ao buscar Open Interest para ${symbol} no timeframe ${timeframe}: ${e.message}`);
+    logger.error(`Erro ao buscar Open Interest para ${symbol} no timeframe ${timeframe}: ${e.message}`);
     return getCachedData(cacheKey) || { isRising: false, percentChange: '0.00' };
   }
 }
@@ -445,7 +430,7 @@ async function fetchFundingRate(symbol) {
     }
     return getCachedData(cacheKey) || { current: null, isRising: false, percentChange: '0.00' };
   } catch (e) {
-    logger.warn(`Erro ao buscar Funding Rate para ${symbol}: ${e.message}`);
+    logger.error(`Erro ao buscar Funding Rate para ${symbol}: ${e.message}`);
     return getCachedData(cacheKey) || { current: null, isRising: false, percentChange: '0.00' };
   }
 }
@@ -474,7 +459,6 @@ async function calculateAggressiveDelta(symbol, timeframe = '3m', limit = 100) {
       isSignificant: Math.abs(deltaPercent) > 10
     };
     setCachedData(cacheKey, result);
-    logger.info(`Delta Agressivo para ${symbol}: Buy=${buyVolume}, Sell=${sellVolume}, Delta=${delta}, Delta%=${deltaPercent}%`);
     return result;
   } catch (e) {
     logger.error(`Erro ao calcular Delta Agressivo para ${symbol}: ${e.message}`);
@@ -585,7 +569,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
       state.ultimoRompimento[symbol]['15m'] = agora;
       state.ultimoRompimento[symbol].historico.push({ nivel: nivelRompido, direcao: 'alta', timestamp: agora });
       state.ultimoRompimento[symbol].historico = state.ultimoRompimento[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Rompimento de alta detectado para ${symbol}: Preço=${format(price)}, Estrutura Alta=${format(zonas.estruturaAlta)}, Tendência=Subindo, Preço Anterior=${format(previousClose)}, LSR=${lsr.value ? lsr.value.toFixed(2) : 'Spot'}, Delta=${aggressiveDelta.deltaPercent}%, OI 15m=${oi15m.percentChange}%, RSI 1h=${rsi1h.toFixed(2)}`);
+      logger.error(`Rompimento de alta detectado para ${symbol}: Preço=${format(price)}, Estrutura Alta=${format(zonas.estruturaAlta)}, Tendência=Subindo`);
     }
   } else if (isValidPreviousCandle && 
              zonas.estruturaBaixa > 0 && 
@@ -624,7 +608,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
       state.ultimoRompimento[symbol]['15m'] = agora;
       state.ultimoRompimento[symbol].historico.push({ nivel: nivelRompido, direcao: 'baixa', timestamp: agora });
       state.ultimoRompimento[symbol].historico = state.ultimoRompimento[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Rompimento de baixa detectado para ${symbol}: Preço=${format(price)}, Estrutura Baixa=${format(zonas.estruturaBaixa)}, Tendência=Caindo, Preço Anterior=${format(previousClose)}, LSR=${lsr.value ? lsr.value.toFixed(2) : 'Spot'}, Delta=${aggressiveDelta.deltaPercent}%, OI 15m=${oi15m.percentChange}%, RSI 1h=${rsi1h.toFixed(2)}`);
+      logger.error(`Rompimento de baixa detectado para ${symbol}: Preço=${format(price)}, Estrutura Baixa=${format(zonas.estruturaBaixa)}, Tendência=Caindo`);
     }
   }
   if (alertText) {
@@ -633,7 +617,7 @@ async function sendAlertRompimentoEstrutura15m(symbol, price, zonas, ohlcv15m, r
         parse_mode: 'Markdown',
         disable_web_page_preview: true
       }));
-      logger.info(`Alerta de rompimento de estrutura enviado para ${symbol}: ${alertText}`);
+      logger.error(`Alerta de rompimento de estrutura enviado para ${symbol}`);
     } catch (e) {
       logger.error(`Erro ao enviar alerta para ${symbol}: ${e.message}`);
     }
@@ -720,7 +704,7 @@ async function sendAlertEMACruzamento3m(symbol, price, zonas, ohlcv15m, rsi1h, l
       state.ultimoEMACruzamento[symbol]['3m'] = agora;
       state.ultimoEMACruzamento[symbol].historico.push({ direcao: 'buy', timestamp: agora });
       state.ultimoEMACruzamento[symbol].historico = state.ultimoEMACruzamento[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Cruzamento EMA de alta detectado para ${symbol}: Preço=${format(price)}, EMA34=${format(ema34)}, EMA89=${format(ema89)}, LSR=${lsr.value ? lsr.value.toFixed(2) : 'Spot'}, OI 15m=${oi15m.percentChange}%, RSI 1h=${rsi1h.toFixed(2)}`);
+      logger.error(`Cruzamento EMA de alta detectado para ${symbol}: Preço=${format(price)}, EMA34=${format(ema34)}, EMA89=${format(ema89)}`);
     }
   } else if (direction === 'sell' && lsr.value !== null && lsr.value > 2.0 && 
       aggressiveDelta.isSignificant && 
@@ -753,7 +737,7 @@ async function sendAlertEMACruzamento3m(symbol, price, zonas, ohlcv15m, rsi1h, l
       state.ultimoEMACruzamento[symbol]['3m'] = agora;
       state.ultimoEMACruzamento[symbol].historico.push({ direcao: 'sell', timestamp: agora });
       state.ultimoEMACruzamento[symbol].historico = state.ultimoEMACruzamento[symbol].historico.slice(-config.MAX_HISTORICO_ALERTAS);
-      logger.info(`Cruzamento EMA de baixa detectado para ${symbol}: Preço=${format(price)}, EMA34=${format(ema34)}, EMA89=${format(ema89)}, LSR=${lsr.value ? lsr.value.toFixed(2) : 'Spot'}, OI 15m=${oi15m.percentChange}%, RSI 1h=${rsi1h.toFixed(2)}`);
+      logger.error(`Cruzamento EMA de baixa detectado para ${symbol}: Preço=${format(price)}, EMA34=${format(ema34)}, EMA89=${format(ema89)}`);
     }
   }
   if (alertText) {
@@ -762,7 +746,7 @@ async function sendAlertEMACruzamento3m(symbol, price, zonas, ohlcv15m, rsi1h, l
         parse_mode: 'Markdown',
         disable_web_page_preview: true
       }));
-      logger.info(`Alerta de cruzamento EMA enviado para ${symbol}: ${alertText}`);
+      logger.error(`Alerta de cruzamento EMA enviado para ${symbol}`);
     } catch (e) {
       logger.error(`Erro ao enviar alerta de cruzamento EMA para ${symbol}: ${e.message}`);
     }
@@ -875,6 +859,7 @@ async function sendAlert1h2h(symbol, data) {
       if (!state.ultimoAlertaPorAtivo[symbol]) state.ultimoAlertaPorAtivo[symbol] = {};
       state.ultimoAlertaPorAtivo[symbol]['1h_2h'] = agora;
       state.wprTriggerState[symbol]['1h_2h'].buyTriggered = false;
+      logger.error(`Alerta de compra WPR enviado para ${symbol}`);
     } catch (e) {
       logger.error(`Erro ao enviar alerta de compra para ${symbol}: ${e.message}`);
     }
@@ -887,6 +872,7 @@ async function sendAlert1h2h(symbol, data) {
       if (!state.ultimoAlertaPorAtivo[symbol]) state.ultimoAlertaPorAtivo[symbol] = {};
       state.ultimoAlertaPorAtivo[symbol]['1h_2h'] = agora;
       state.wprTriggerState[symbol]['1h_2h'].sellTriggered = false;
+      logger.error(`Alerta de correção WPR enviado para ${symbol}`);
     } catch (e) {
       logger.error(`Erro ao enviar alerta de correção para ${symbol}: ${e.message}`);
     }
@@ -910,7 +896,7 @@ async function checkConditions() {
       setCachedData(`${cacheKeyPrefix}_4h`, ohlcv4hRaw);
       setCachedData(`${cacheKeyPrefix}_1d`, ohlcvDiarioRaw);
       if (!ohlcv3mRawFutures || !ohlcv15mRaw || !ohlcv1hRaw || !ohlcv2hRaw || !ohlcv4hRaw || !ohlcvDiarioRaw) {
-        logger.warn(`Dados OHLCV insuficientes para ${symbol}, pulando...`);
+        logger.error(`Dados OHLCV insuficientes para ${symbol}, pulando...`);
         return;
       }
       const ohlcv3m = normalizeOHLCV(ohlcv3mRawFutures);
@@ -922,7 +908,7 @@ async function checkConditions() {
       const closes3m = ohlcv3m.map(c => c.close).filter(c => !isNaN(c));
       const currentPrice = closes3m[closes3m.length - 1];
       if (isNaN(currentPrice)) {
-        logger.warn(`Preço atual inválido para ${symbol}, pulando...`);
+        logger.error(`Preço atual inválido para ${symbol}, pulando...`);
         return;
       }
       const wpr2hValues = calculateWPR(ohlcv2h);
@@ -943,7 +929,7 @@ async function checkConditions() {
       const ema34Values = calculateEMA(ohlcv3m, config.EMA_34_PERIOD);
       const ema89Values = calculateEMA(ohlcv3m, config.EMA_89_PERIOD);
       if (!wpr2hValues.length || !wpr1hValues.length || !rsi1hValues.length || !atrValues.length || !fiValues.length || !ema34Values.length || !ema89Values.length) {
-        logger.warn(`Indicadores insuficientes para ${symbol}, pulando...`);
+        logger.error(`Indicadores insuficientes para ${symbol}, pulando...`);
         return;
       }
       const ema34Current = ema34Values[ema34Values.length - 1];
@@ -1005,7 +991,6 @@ async function startHeartbeat() {
   setInterval(async () => {
     try {
       await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 💥Dica Operacional: Para 🟢Compra prefira moedas com Stoch 4h e Diário baixos, abaixo de 40, em conjunto com LSR abaixo de 1.7 e verifique o Volume Delta uma importante informação de dados reais do livro comprador do ativo, 💹Positivo acima de 30% a 50%  é o ideal. 💥Dica de Venda: para a 🔴Venda observar o Stoch 4h e Diário altos acima de 80 a 95, LSR Alto acima de 3, com Volume Delta ⭕Negativo -30% a -50%, que significa ausênsia de conpradores ...Observe também o 📍Funding Rate, para 🟢Compra com círculo verde, e valor do Funding rate negativo,  Ja para 🔴Venda com círculo vermelho, valor do Funding rate positivo, 💹 seus trades serão mais lucrativos... ☑︎ Gerencie seu Risco - @J4Rviz'));
-      logger.info('Heartbeat enviado');
     } catch (e) {
       logger.error(`Erro no heartbeat: ${e.message}`);
     }
@@ -1013,7 +998,6 @@ async function startHeartbeat() {
 }
 
 async function main() {
-  logger.info('Iniciando scalp');
   try {
     await withRetry(() => bot.api.sendMessage(config.TELEGRAM_CHAT_ID, '🤖 Titanium Optimus Prime-💹Start...'));
     startHeartbeat();
